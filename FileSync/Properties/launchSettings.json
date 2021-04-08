@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "FileSync": {
+      "commandName": "Project",
+      "commandLineArgs": "-s 192.168.0.105 8888 server"
+    }
+  }
+}
