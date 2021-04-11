@@ -1,25 +1,25 @@
-﻿using Newtonsoft.Json;
-using System;
-using System.Net.Sockets;
-using System.Threading.Tasks;
+﻿using System.Net.Sockets;
 
 namespace FileSync
 {
     class Client
     {
-        public static async Task Send(string host, int port, Document document)
+        private static TcpClient TcpClient;
+        private static string Host;
+        private static int Port;
+        private static string PathToSync;
+
+        public Client(string host, int port, string pathToSync)
         {
-            var message = JsonConvert.SerializeObject(document);
+            Host = host;
+            Port = port;
+            PathToSync = pathToSync;
+        }
 
-            using (TcpClient client = new TcpClient(host, port))
-            {
-                byte[] data = System.Text.Encoding.Unicode.GetBytes(message);
-
-                NetworkStream stream = client.GetStream();
-
-                await stream.WriteAsync(data, 0, data.Length);
-                Console.WriteLine("{0} - {1}: {2}", DateTime.Now.ToUniversalTime(), document.Type.ToString(), document.Name);
-            }
+        public void Start()
+        {
+            TcpClient = new TcpClient(Host, Port);
+            new SyncDirectory(PathToSync, TcpClient).Start();
         }
     }
 }
