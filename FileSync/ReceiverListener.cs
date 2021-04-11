@@ -7,9 +7,9 @@ using System.Text;
 
 namespace FileSync
 {
-    public class Listener
+    public class ReceiverListener
     {
-        public static void Start(string host, int port, string path)
+        public static void Listner(string host, int port, string path)
         {
             do
             {
@@ -36,22 +36,38 @@ namespace FileSync
                                     {
                                         ms.Write(data, 0, numBytesRead);
                                     }
-                                    received = Encoding.ASCII.GetString(ms.ToArray(), 0, (int)ms.Length);
+                                    received = Encoding.Unicode.GetString(ms.ToArray(), 0, (int)ms.Length);
                                     var document = JsonConvert.DeserializeObject<Document>(received);
 
-                                    Console.WriteLine(String.Format("Received: " + document.Name));
+                                    Console.WriteLine("{0} - {1}: {2}", DateTime.Now.ToUniversalTime(), document.Type.ToString(), document.Name);
 
-                                    var newFilePath = $"{path}/{document.Name}";
-                                    if (!File.Exists(newFilePath))
+                                    var newFilePath = $"{path}/{document.Client}/{document.Name}";
+
+                                    if (!Directory.Exists($"{path}/{document.Client}"))
+                                        Directory.CreateDirectory($"{path}/{document.Client}");
+
+                                    if (document.Type == WatcherChangeTypes.Deleted)
                                     {
-                                        File.WriteAllBytes(newFilePath, document.Content);
+                                        if (File.Exists(newFilePath))
+                                            File.Delete(newFilePath);
+                                    }
+                                    else if (document.Type == WatcherChangeTypes.Renamed)
+                                    {
+                                        File.Move($"{path}/{document.Client}/{document.OldName}", newFilePath);
                                     }
                                     else
                                     {
-                                        var currentModified = File.GetLastWriteTime(newFilePath);
-                                        if (currentModified < document.Modified)
+                                        if (!File.Exists(newFilePath))
                                         {
                                             File.WriteAllBytes(newFilePath, document.Content);
+                                        }
+                                        else
+                                        {
+                                            var currentModified = File.GetLastWriteTime(newFilePath);
+                                            if (currentModified < document.Modified)
+                                            {
+                                                File.WriteAllBytes(newFilePath, document.Content);
+                                            }
                                         }
                                     }
                                 }
