@@ -26,9 +26,13 @@ namespace FileSync
             try
             {
                 TcpServer.Start();
-                Client = TcpServer.AcceptTcpClient();
-                Console.WriteLine("-> Client connected");
-                new SyncDirectory(PathToSync, Client).Start();
+                while (true)
+                {
+                    Client = TcpServer.AcceptTcpClient();
+                    Console.WriteLine("-> Client connected");
+                    new SyncDirectory(PathToSync, Client).Start();
+                    Console.WriteLine("-> Disconnected.");
+                }
             }
             catch (SocketException e)
             {

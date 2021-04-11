@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace FileSync
@@ -25,6 +26,8 @@ namespace FileSync
 
         public void Start()
         {
+            Listen().Start();
+
             var sync = SyncDir();
             sync.Start();
             sync.Wait();
@@ -34,13 +37,10 @@ namespace FileSync
         {
             return new Task(() =>
             {
-                var listner = Listen();
-                listner.Start();
-
                 var files = Directory.GetFiles(PathToSync);
                 foreach (var file in files)
                 {
-                    var content = File.ReadAllBytes(file);
+                    var content = ReadFile(file);
                     var document = new Document
                     {
                         Client = CryptTools.GetHashString(NetworkInterface.GetAllNetworkInterfaces().Where(x => x.OperationalStatus == OperationalStatus.Up).First().GetPhysicalAddress().ToString()),
@@ -58,8 +58,7 @@ namespace FileSync
                 watcher.Changed += new FileSystemEventHandler(OnChanged);
                 watcher.Deleted += new FileSystemEventHandler(OnChanged);
                 watcher.Renamed += new RenamedEventHandler(OnRenamed);
-                watcher.EnableRaisingEvents = true;
-                while (true)
+                while (Client.Connected)
                 {
                     watcher.WaitForChanged(changeType: WatcherChangeTypes.All);
                 }
@@ -120,7 +119,7 @@ namespace FileSync
                 }
                 else
                 {
-                    var content = File.ReadAllBytes(filePath);
+                    var content = ReadFile(filePath);
                     Send(new Document
                     {
                         Client = CryptTools.GetHashString(NetworkInterface.GetAllNetworkInterfaces().Where(x => x.OperationalStatus == OperationalStatus.Up).First().GetPhysicalAddress().ToString()),
@@ -132,9 +131,9 @@ namespace FileSync
                     });
                 }
             }
-            catch (IOException ex)
+            catch (Exception ex)
             {
-                if (ex.Message.Contains("used by another process"))
+                if (ex.Message.Contains("File timeout"))
                 {
                     string filePath = e.FullPath;
                     Console.ForegroundColor = ConsoleColor.Red;
@@ -168,6 +167,7 @@ namespace FileSync
                 }
 
                 Console.WriteLine("{0} - {1}: {2}", DateTime.Now.ToUniversalTime(), syncType, document.Name);
+                Thread.Sleep(1000);
             }
             else
             {
@@ -196,6 +196,7 @@ namespace FileSync
                                 ms.Write(data, 0, numBytesRead);
                             }
                             received = Encoding.Unicode.GetString(ms.ToArray(), 0, (int)ms.Length);
+
                             var document = JsonConvert.DeserializeObject<Document>(received);
 
                             var syncType = "";
@@ -250,13 +251,48 @@ namespace FileSync
                                         }
                                     }
                                 }
-
                             }
                         }
                     }
+                    Thread.Sleep(1000);
                 }
-                Console.WriteLine("Disconnected.");
+                Console.WriteLine("-> Disconnected.");
             });
+
+        }
+        private byte[] ReadFile(string path)
+        {
+            using (var fs = WaitForFile(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                using (var ms = new MemoryStream())
+                {
+                    fs.CopyTo(ms);
+                    return ms.ToArray();
+                }
+            }
+        }
+
+        FileStream WaitForFile(string fullPath, FileMode mode, FileAccess access, FileShare share)
+        {
+            for (int numTries = 0; numTries < 10; numTries++)
+            {
+                FileStream fs = null;
+                try
+                {
+                    fs = new FileStream(fullPath, mode, access, share);
+                    return fs;
+                }
+                catch (IOException)
+                {
+                    if (fs != null)
+                    {
+                        fs.Dispose();
+                    }
+                    Thread.Sleep(50);
+                }
+            }
+
+            throw new Exception("File timeout");
         }
     }
 }
