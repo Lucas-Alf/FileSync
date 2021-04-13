@@ -3,9 +3,9 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -18,6 +18,7 @@ namespace FileSync
         private static TcpClient Client { get; set; }
         private static bool CanSend { get; set; } = true;
 
+
         public SyncDirectory(string pathToSync, TcpClient client)
         {
             PathToSync = pathToSync;
@@ -26,43 +27,135 @@ namespace FileSync
 
         public void Start()
         {
-            Listen().Start();
+            Console.WriteLine("Write \"pause\" or \"resume\" to start/stop the sync.");
 
-            var sync = SyncDir();
-            sync.Start();
-            sync.Wait();
+            CheckConnetion().Start();
+
+            var cancelationTokenSource = new CancellationTokenSource();
+            var cancellationToken = cancelationTokenSource.Token;
+
+            var syncDir = SyncDir(cancellationToken);
+            syncDir.Start();
+
+            var listen = Listen(cancellationToken);
+            listen.Start();
+
+            var running = true;
+            while (true)
+            {
+                var userInput = Console.ReadLine();
+                switch (userInput)
+                {
+                    case "pause":
+                        if (!running)
+                        {
+                            Console.WriteLine("-> The sync is already paused.");
+                        }
+                        else
+                        {
+                            cancelationTokenSource.Cancel();
+                            running = false;
+                        }
+                        break;
+                    case "resume":
+                        if (running)
+                        {
+                            Console.WriteLine("-> The sync is already running.");
+                        }
+                        else
+                        {
+                            cancelationTokenSource = new CancellationTokenSource();
+                            cancellationToken = cancelationTokenSource.Token;
+
+                            listen = Listen(cancellationToken);
+                            listen.Start();
+
+                            Send(new Document
+                            {
+                                ResendAll = true,
+                                Name = "Resend All"
+                            });
+
+                            syncDir = SyncDir(cancellationToken);
+                            syncDir.Start();
+
+                            running = true;
+                        }
+                        break;
+                    default:
+                        Console.WriteLine("-> Invalid command.");
+                        break;
+                }
+            }
         }
 
-        private Task SyncDir()
+        private static Task CheckConnetion()
         {
             return new Task(() =>
             {
-                var files = Directory.GetFiles(PathToSync);
-                foreach (var file in files)
+                var state = Convert.ToBoolean(Client.Connected.ToString());
+                while (true)
                 {
-                    var content = ReadFile(file);
-                    var document = new Document
+                    if (state != Client.Connected)
                     {
-                        Client = CryptTools.GetHashString(NetworkInterface.GetAllNetworkInterfaces().Where(x => x.OperationalStatus == OperationalStatus.Up).First().GetPhysicalAddress().ToString()),
-                        Name = Path.GetFileName(file),
-                        Modified = File.GetLastWriteTime(file),
-                        Checksum = CryptTools.GetHashString(content),
-                        Content = content
-                    };
-                    Send(document);
+                        Console.WriteLine($"-> Connection changed to: {(Client.Connected ? "Connected" : "Disconected")}");
+                        state = Convert.ToBoolean(Client.Connected.ToString());
+                    }
+                    Thread.Sleep(500);
                 }
+            });
+        }
 
-                FileSystemWatcher watcher = new FileSystemWatcher();
-                watcher.Path = PathToSync;
+        private Task SyncDir(CancellationToken cancellationToken)
+        {
+            return new Task(() =>
+            {
+                SendAll();
+
+                FileSystemWatcher watcher = new FileSystemWatcher
+                {
+                    Path = PathToSync
+                };
+                Console.WriteLine("-> Start watching directory.");
                 watcher.Created += new FileSystemEventHandler(OnChanged);
                 watcher.Changed += new FileSystemEventHandler(OnChanged);
                 watcher.Deleted += new FileSystemEventHandler(OnChanged);
                 watcher.Renamed += new RenamedEventHandler(OnRenamed);
+                watcher.EnableRaisingEvents = true;
+
+
                 while (Client.Connected)
                 {
-                    watcher.WaitForChanged(changeType: WatcherChangeTypes.All);
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        Console.WriteLine("-> Stop watching directory.");
+                        watcher.EnableRaisingEvents = false;
+                        break;
+                    }
+                    else
+                    {
+                        Thread.Sleep(200);
+                    }
                 }
-            });
+            }, cancellationToken);
+        }
+
+        private void SendAll()
+        {
+            var files = Directory.GetFiles(PathToSync);
+            foreach (var file in files)
+            {
+                var content = ReadFile(file);
+                var document = new Document
+                {
+                    Name = Path.GetFileName(file),
+                    Modified = File.GetLastWriteTime(file),
+                    Checksum = CryptTools.GetHashString(content),
+                    Content = content
+                };
+                Send(document);
+            }
         }
 
         private void OnRenamed(object source, RenamedEventArgs e)
@@ -82,7 +175,6 @@ namespace FileSync
 
             Send(new Document
             {
-                Client = CryptTools.GetHashString(NetworkInterface.GetAllNetworkInterfaces().Where(x => x.OperationalStatus == OperationalStatus.Up).First().GetPhysicalAddress().ToString()),
                 Name = Path.GetFileName(filePath),
                 OldName = e.OldName,
                 Type = e.ChangeType,
@@ -112,7 +204,6 @@ namespace FileSync
                 {
                     Send(new Document
                     {
-                        Client = CryptTools.GetHashString(NetworkInterface.GetAllNetworkInterfaces().Where(x => x.OperationalStatus == OperationalStatus.Up).First().GetPhysicalAddress().ToString()),
                         Name = Path.GetFileName(filePath),
                         Type = e.ChangeType,
                     });
@@ -122,7 +213,6 @@ namespace FileSync
                     var content = ReadFile(filePath);
                     Send(new Document
                     {
-                        Client = CryptTools.GetHashString(NetworkInterface.GetAllNetworkInterfaces().Where(x => x.OperationalStatus == OperationalStatus.Up).First().GetPhysicalAddress().ToString()),
                         Name = Path.GetFileName(filePath),
                         Type = e.ChangeType,
                         Modified = File.GetLastWriteTime(filePath),
@@ -176,88 +266,118 @@ namespace FileSync
         }
 
 
-        public Task Listen()
+        public Task Listen(CancellationToken cancellationToken)
         {
             return new Task(() =>
             {
-                while (Client.Connected)
+                Console.WriteLine("-> Start Listening.");
+                while (true)
                 {
-                    string received;
-                    NetworkStream stream = Client.GetStream();
-                    while (stream.DataAvailable)
+                    if (cancellationToken.IsCancellationRequested)
                     {
-                        byte[] data = new byte[1000000];
-                        using (MemoryStream ms = new MemoryStream())
+                        Console.WriteLine("-> Stop listening.");
+                        break;
+                    }
+                    else
+                    {
+                        string received;
+                        NetworkStream stream = Client.GetStream();
+                        while (stream.DataAvailable)
                         {
-
-                            int numBytesRead;
-                            while (stream.DataAvailable && (numBytesRead = stream.Read(data, 0, data.Length)) > 0)
+                            byte[] data = new byte[1000000];
+                            using (MemoryStream ms = new MemoryStream())
                             {
-                                ms.Write(data, 0, numBytesRead);
-                            }
-                            received = Encoding.Unicode.GetString(ms.ToArray(), 0, (int)ms.Length);
 
-                            var document = JsonConvert.DeserializeObject<Document>(received);
-
-                            var syncType = "";
-                            if (document.Type.ToString() == "0")
-                            {
-                                syncType = "received";
-                            }
-                            else
-                            {
-                                syncType = document.Type.ToString();
-                            }
-
-                            Console.WriteLine("{0} - {1}: {2}", DateTime.Now.ToUniversalTime(), syncType, document.Name);
-
-                            var newFilePath = $"{PathToSync}/{document.Name}";
-
-                            if (document.Type == WatcherChangeTypes.Deleted)
-                            {
-                                if (File.Exists(newFilePath))
+                                int numBytesRead;
+                                while (stream.DataAvailable && (numBytesRead = stream.Read(data, 0, data.Length)) > 0)
                                 {
-                                    File.Delete(newFilePath);
-                                    CanSend = false;
+                                    ms.Write(data, 0, numBytesRead);
                                 }
-                            }
-                            else if (document.Type == WatcherChangeTypes.Renamed)
-                            {
-                                File.Move($"{PathToSync}/{document.OldName}", newFilePath);
-                                CanSend = false;
-                            }
-                            else
-                            {
-                                if (CryptTools.GetHashString(document.Content) != document.Checksum)
+                                received = Encoding.Unicode.GetString(ms.ToArray(), 0, (int)ms.Length);
+
+                                List<Document> documents = new List<Document>();
+
+                                if (received.Where(x => x == '}').Count() > 1)
                                 {
-                                    Console.ForegroundColor = ConsoleColor.Red;
-                                    Console.WriteLine("{0} - CHECKSUM FAIL: {1}", DateTime.Now.ToUniversalTime(), document.Name);
-                                    Console.ResetColor();
+                                    Regex regex = new Regex(@"(\})(\{)", RegexOptions.Multiline);
+                                    received = regex.Replace(received, @"$1,$2");
+                                    received = "[" + received + "]";
+                                    documents.AddRange(JsonConvert.DeserializeObject<IList<Document>>(received));
                                 }
                                 else
                                 {
-                                    if (!File.Exists(newFilePath))
+                                    documents.Add(JsonConvert.DeserializeObject<Document>(received));
+                                }
+
+                                foreach (var document in documents)
+                                {
+                                    var syncType = "";
+                                    if (document.Type.ToString() == "0")
                                     {
-                                        File.WriteAllBytes(newFilePath, document.Content);
-                                        CanSend = false;
+                                        syncType = "received";
                                     }
                                     else
                                     {
-                                        var currentModified = File.GetLastWriteTime(newFilePath);
-                                        if (currentModified < document.Modified)
+                                        syncType = document.Type.ToString();
+                                    }
+
+                                    Console.WriteLine("{0} - {1}: {2}", DateTime.Now.ToUniversalTime(), syncType, document.Name);
+
+                                    if (document.ResendAll)
+                                    {
+                                        SendAll();
+                                    }
+                                    else
+                                    {
+                                        var newFilePath = $"{PathToSync}/{document.Name}";
+
+                                        if (document.Type == WatcherChangeTypes.Deleted)
                                         {
-                                            File.WriteAllBytes(newFilePath, document.Content);
+                                            if (File.Exists(newFilePath))
+                                            {
+                                                File.Delete(newFilePath);
+                                                CanSend = false;
+                                            }
+                                        }
+                                        else if (document.Type == WatcherChangeTypes.Renamed)
+                                        {
+                                            File.Move($"{PathToSync}/{document.OldName}", newFilePath);
                                             CanSend = false;
+                                        }
+                                        else
+                                        {
+                                            if (CryptTools.GetHashString(document.Content) != document.Checksum)
+                                            {
+                                                Console.ForegroundColor = ConsoleColor.Red;
+                                                Console.WriteLine("{0} - CHECKSUM FAIL: {1}", DateTime.Now.ToUniversalTime(), document.Name);
+                                                Console.ResetColor();
+                                            }
+                                            else
+                                            {
+                                                if (!File.Exists(newFilePath))
+                                                {
+                                                    File.WriteAllBytes(newFilePath, document.Content);
+                                                    CanSend = false;
+                                                }
+                                                else
+                                                {
+                                                    var currentModified = File.GetLastWriteTime(newFilePath);
+                                                    if (currentModified < document.Modified)
+                                                    {
+                                                        File.WriteAllBytes(newFilePath, document.Content);
+                                                        CanSend = false;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
                         }
+                        Thread.Sleep(1000);
                     }
-                    Thread.Sleep(1000);
                 }
-                Console.WriteLine("-> Disconnected.");
-            });
+            }, cancellationToken);
 
         }
         private byte[] ReadFile(string path)

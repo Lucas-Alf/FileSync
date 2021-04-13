@@ -68,6 +68,7 @@ namespace FileSync
                     Console.ResetColor();
                     Environment.Exit(0);
                     break;
+
             }
         }
     }
