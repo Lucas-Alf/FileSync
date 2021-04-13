@@ -257,7 +257,6 @@ namespace FileSync
                 }
 
                 Console.WriteLine("{0} - {1}: {2}", DateTime.Now.ToUniversalTime(), syncType, document.Name);
-                Thread.Sleep(1000);
             }
             else
             {
@@ -301,7 +300,7 @@ namespace FileSync
                                 {
                                     Regex regex = new Regex(@"(\})(\{)", RegexOptions.Multiline);
                                     received = regex.Replace(received, @"$1,$2");
-                                    received = "[" + received + "]";
+                                    received = $"[{received}]";
                                     documents.AddRange(JsonConvert.DeserializeObject<IList<Document>>(received));
                                 }
                                 else
@@ -341,8 +340,11 @@ namespace FileSync
                                         }
                                         else if (document.Type == WatcherChangeTypes.Renamed)
                                         {
-                                            File.Move($"{PathToSync}/{document.OldName}", newFilePath);
-                                            CanSend = false;
+                                            if (File.Exists($"{PathToSync}/{document.OldName}"))
+                                            {
+                                                File.Move($"{PathToSync}/{document.OldName}", newFilePath);
+                                                CanSend = false;
+                                            }
                                         }
                                         else
                                         {
@@ -394,7 +396,7 @@ namespace FileSync
 
         FileStream WaitForFile(string fullPath, FileMode mode, FileAccess access, FileShare share)
         {
-            for (int numTries = 0; numTries < 10; numTries++)
+            for (int numTries = 0; numTries < 25; numTries++)
             {
                 FileStream fs = null;
                 try
